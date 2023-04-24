@@ -2,16 +2,19 @@ package golldb
 
 import (
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 type LLDB struct {
 	conn   net.Conn
 	target string
+	*sync.Mutex
 }
 
 type Address struct {
@@ -35,9 +38,29 @@ func NewLLDBServer(ip, port string) (*LLDB, error) {
 	conn.Read(buffer)
 	conn.Write([]byte("+"))
 
-	return &LLDB{
+	lldb := &LLDB{
 		conn: conn,
-	}, nil
+	}
+
+	return lldb, nil
+}
+
+// GetThreads returns information about the threads running.
+func (l *LLDB) GetThreads() (map[string]any, error) {
+	msg := "jThreadsInfo"
+	repl := string(l.execSimple(msg))
+	repl = strings.TrimLeft(repl, "$")
+	repl = strings.TrimRight(repl, "#00")
+
+	mp := make(map[string]any)
+	json.Unmarshal([]byte(repl), &mp)
+	return mp, nil
+}
+
+// Interrupt interrupts the running binary as if it has been sent CTRL+C
+func (l *LLDB) Interrupt() error {
+	l.execSimple("vCtrlC")
+	return nil
 }
 
 // Close closes underlying connection to the gdbserver/lldb-server
@@ -138,8 +161,9 @@ func (l *LLDB) Allocate(size int, permissions string) (*Address, error) {
 	}, nil
 }
 
+// WriteAtAddress writes specified byte slice at the address provided.
 func (l *LLDB) WriteAtAddress(addr *Address, data []byte) error {
-	encoded := hex.EncodeToString([]byte("deadbeef"))
+	encoded := hex.EncodeToString(data)
 	msg := "M"
 	msg += fmt.Sprintf("%x", addr.value)
 	msg += ","
@@ -150,6 +174,7 @@ func (l *LLDB) WriteAtAddress(addr *Address, data []byte) error {
 	return nil
 }
 
+// Attach attaches to the running program by name.
 func (l *LLDB) Attach(name string) error {
 	l.target = name
 	msg := "vAttachName;" + hex.EncodeToString([]byte(name))
@@ -157,11 +182,13 @@ func (l *LLDB) Attach(name string) error {
 	return nil
 }
 
+// Detach detaches from the debugger program.
 func (l *LLDB) Detach() error {
 	l.execSimple("D")
 	return nil
 }
 
+// SaveRegisters saves current snapshot of the registers.
 func (l *LLDB) SaveRegisters() error {
 	l.execSimple("QSaveRegisterState")
 	return nil
